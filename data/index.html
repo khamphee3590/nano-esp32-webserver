@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arduino Nano ESP32</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Arduino Nano ESP32</h1>
+    <p>Web Server Dashboard</p>
+  </header>
+
+  <main>
+    <section class="card" id="status-card">
+      <h2>สถานะอุปกรณ์</h2>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="label">IP Address</span>
+          <span class="value" id="ip">กำลังโหลด...</span>
+        </div>
+        <div class="info-item">
+          <span class="label">WiFi Signal</span>
+          <span class="value" id="rssi">กำลังโหลด...</span>
+        </div>
+        <div class="info-item">
+          <span class="label">Uptime</span>
+          <span class="value" id="uptime">กำลังโหลด...</span>
+        </div>
+        <div class="info-item">
+          <span class="label">สถานะ</span>
+          <span class="value status-ok" id="status">กำลังโหลด...</span>
+        </div>
+      </div>
+      <button onclick="fetchStatus()">รีเฟรช</button>
+    </section>
+  </main>
+
+  <footer>
+    <p>Arduino Nano ESP32 &mdash; PlatformIO + ESPAsyncWebServer</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
