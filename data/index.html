@@ -35,6 +35,21 @@
       </div>
       <button onclick="fetchStatus()">รีเฟรช</button>
     </section>
+
+    <section class="card gpio-card">
+      <h2>
+        GPIO Control
+        <span class="gpio-refresh-badge" id="gpio-countdown">โหลด...</span>
+      </h2>
+      <div class="gpio-legend">
+        <span class="legend-dot dot-input"></span>INPUT
+        <span class="legend-dot dot-output"></span>OUTPUT
+        <span class="legend-dot dot-pullup"></span>PULLUP
+      </div>
+      <div class="gpio-grid" id="gpio-grid">
+        <div class="gpio-loading">กำลังโหลด GPIO...</div>
+      </div>
+    </section>
   </main>
 
   <footer>

@@ -6,12 +6,13 @@ const app        = express();
 const httpServer = http.createServer(app);
 const wss        = new WebSocketServer({ server: httpServer, path: '/tunnel' });
 
-const TIMEOUT_MS = 10000; // รอ ESP32 ตอบ 10 วินาที
+const TIMEOUT_MS = 10000;
 
 let esp32 = null;
-const pending = new Map(); // id → { res, timer }
+const pending = new Map();
 
-// ======= ESP32 เชื่อมเข้ามาผ่าน WebSocket =======
+app.use(express.json());
+
 wss.on('connection', (ws, req) => {
     console.log(`[Tunnel] ESP32 connected from ${req.socket.remoteAddress}`);
     esp32 = ws;
@@ -19,40 +20,27 @@ wss.on('connection', (ws, req) => {
     ws.on('message', (raw) => {
         const text = raw.toString();
         const nl   = text.indexOf('\n');
-
-        // รูปแบบ: JSON metadata บรรทัดแรก, body ที่เหลือ
         const jsonPart = nl >= 0 ? text.slice(0, nl) : text;
         const body     = nl >= 0 ? text.slice(nl + 1) : '';
 
         let msg;
-        try { msg = JSON.parse(jsonPart); }
-        catch { return; }
+        try { msg = JSON.parse(jsonPart); } catch { return; }
 
         if (msg.type === 'response' && pending.has(msg.id)) {
             const { res, timer } = pending.get(msg.id);
             clearTimeout(timer);
             pending.delete(msg.id);
-
-            res.status(msg.status)
-               .type(msg.contentType || 'text/plain')
-               .send(body);
+            res.status(msg.status).type(msg.contentType || 'text/plain').send(body);
         }
     });
 
-    ws.on('close', () => {
-        console.log('[Tunnel] ESP32 disconnected');
-        esp32 = null;
-    });
-
+    ws.on('close', () => { console.log('[Tunnel] ESP32 disconnected'); esp32 = null; });
     ws.on('error', (err) => console.error('[Tunnel] WS error:', err.message));
 });
 
-// ======= รับ HTTP request จากคนทั่วโลก =======
 app.use((req, res) => {
-    // health check สำหรับ Railway/Render
-    if (req.path === '/healthz') {
+    if (req.path === '/healthz')
         return res.json({ relay: 'ok', esp32: esp32 ? 'online' : 'offline' });
-    }
 
     if (!esp32 || esp32.readyState !== WebSocket.OPEN) {
         return res.status(503).send(`<!DOCTYPE html>
@@ -68,7 +56,6 @@ display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
     }
 
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
     const timer = setTimeout(() => {
         if (pending.has(id)) {
             pending.delete(id);
@@ -84,10 +71,10 @@ display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
         method: req.method,
         path:   req.path || '/',
         query:  req.query,
+        body:   req.body ? JSON.stringify(req.body) : '',
     }));
 });
 
-// ======= Start =======
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
     console.log(`Relay server running on port ${PORT}`);

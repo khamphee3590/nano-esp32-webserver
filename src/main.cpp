@@ -1,79 +1,305 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <DNSServer.h>
+#include <Preferences.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 
-// ======= ตั้งค่า WiFi =======
-const char* WIFI_SSID     = "YOUR_SSID";
-const char* WIFI_PASSWORD = "YOUR_PASSWORD";
+// ======= Constants =======
+#define RESET_PIN      0        // BOOT button — ค้าง 5 วิเพื่อ factory reset
+#define RESET_HOLD_MS  5000
+#define DNS_PORT       53
+#define AP_IP          "192.168.4.1"
 
-// ======= ตั้งค่า Relay Server =======
-// หลัง deploy relay ไปแล้ว ให้เปลี่ยนเป็น host ของคุณ
-const char* RELAY_HOST = "your-relay.railway.app";
-const int   RELAY_PORT = 443;          // 443 = WSS (HTTPS), 80 = WS
-const char* RELAY_PATH = "/tunnel";
+// ======= GPIO Definitions =======
+struct PinDef { const char* name; uint8_t gpio; bool analog; };
+const PinDef PINS[] = {
+    {"D2",5,0},{"D3",6,0},{"D4",7,0},{"D5",8,0},{"D6",9,0},{"D7",10,0},
+    {"D8",17,0},{"D9",18,0},{"D10",21,0},{"D11",38,0},{"D12",47,0},{"D13",48,0},
+    {"A0",1,1},{"A1",2,1},{"A2",3,1},{"A3",4,1},{"A4",11,1},{"A5",12,1},{"A6",13,1},{"A7",14,1},
+};
+const int PIN_COUNT = sizeof(PINS) / sizeof(PINS[0]);
+uint8_t pinModes[PIN_COUNT];
 
-AsyncWebServer localServer(80);
+// ======= App State =======
+enum AppState { STATE_AP, STATE_CONNECTING, STATE_NORMAL };
+AppState appState = STATE_AP;
+
+// ======= Globals =======
+DNSServer        dns;
+Preferences      prefs;
+AsyncWebServer   webServer(80);
 WebSocketsClient tunnel;
 
+struct Config {
+    char ssid[64];
+    char password[64];
+    char relayHost[128];
+    char deviceName[64];
+    char deviceId[13];   // MAC hex ไม่มีเครื่องหมาย : เช่น "AABBCCDDEEFF"
+    char pairingCode[7]; // 6 หลัก
+} cfg;
+
+unsigned long connectStart = 0;
+bool          connectFailed = false;
+String        wifiScanJson  = "[]";
+
+// ======= Setup Page HTML (PROGMEM) =======
+const char SETUP_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html lang="th"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32 Setup</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+header{background:#1e293b;padding:20px 24px;border-bottom:2px solid #3b82f6;text-align:center}
+h1{color:#3b82f6;font-size:1.5rem}header p{color:#94a3b8;font-size:.85rem;margin-top:4px}
+main{padding:24px;display:flex;flex-direction:column;gap:16px;max-width:480px;margin:0 auto}
+.card{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:20px}
+h2{color:#3b82f6;font-size:1rem;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #334155}
+.row{display:flex;justify-content:space-between;align-items:center;padding:5px 0}
+.lbl{font-size:.72rem;color:#64748b;text-transform:uppercase;letter-spacing:.04em}
+.val{font-size:.9rem;font-weight:600;font-family:monospace;color:#f1f5f9}
+.pcode{font-size:2.2rem;font-weight:700;color:#3b82f6;letter-spacing:.35em;text-align:center;padding:14px 0}
+.hint{font-size:.72rem;color:#475569;text-align:center;margin-top:2px}
+label{display:block;font-size:.72rem;color:#64748b;text-transform:uppercase;margin:12px 0 4px}
+input,select{width:100%;background:#0f172a;border:1px solid #334155;color:#e2e8f0;padding:10px 12px;border-radius:8px;font-size:.9rem;outline:none}
+input:focus,select:focus{border-color:#3b82f6}
+.btn{width:100%;background:#3b82f6;color:#fff;border:none;padding:12px;border-radius:8px;font-size:.95rem;cursor:pointer;margin-top:4px}
+.btn:hover{background:#2563eb}
+.btn-sm{background:#334155;color:#94a3b8;border:none;padding:7px 14px;border-radius:7px;font-size:.8rem;cursor:pointer;margin-top:10px}
+.btn-sm:hover{background:#475569;color:#e2e8f0}
+.msg{padding:10px 14px;border-radius:8px;font-size:.85rem;text-align:center;display:none;margin-top:4px}
+.err{background:#450a0a;color:#f87171;display:block}
+.ok{background:#052e16;color:#4ade80;display:block}
+.inf{background:#172554;color:#93c5fd;display:block}
+footer{text-align:center;padding:16px;color:#334155;font-size:.75rem}
+</style></head>
+<body>
+<header><h1>ESP32 Setup</h1><p>ตั้งค่าการเชื่อมต่อ WiFi และ Server</p></header>
+<main>
+  <div class="card">
+    <h2>ข้อมูลอุปกรณ์</h2>
+    <div class="row"><span class="lbl">Device ID</span><span class="val" id="did">-</span></div>
+    <div class="lbl" style="margin-top:14px">Pairing Code</div>
+    <div class="pcode" id="pcode">------</div>
+    <div class="hint">ใช้รหัสนี้เพื่อผูกอุปกรณ์กับบัญชีบน relay</div>
+  </div>
+  <div class="card">
+    <h2>การตั้งค่า WiFi</h2>
+    <label>เครือข่าย WiFi</label>
+    <select id="ssid-sel" onchange="onSel()"><option value="">-- กำลังสแกน... --</option></select>
+    <label>SSID (ถ้าไม่อยู่ในรายการ)</label>
+    <input type="text" id="ssid" placeholder="พิมพ์ชื่อ WiFi เอง" />
+    <label>รหัสผ่าน</label>
+    <input type="password" id="pass" placeholder="WiFi Password" />
+    <button class="btn-sm" onclick="rescan()">สแกนใหม่</button>
+  </div>
+  <div class="card">
+    <h2>การตั้งค่า Server</h2>
+    <label>Relay Host</label>
+    <input type="text" id="relay" placeholder="your-relay.railway.app" />
+    <label>ชื่ออุปกรณ์</label>
+    <input type="text" id="devname" placeholder="เช่น โกดัง ชั้น 1" maxlength="63" />
+  </div>
+  <div id="msg" class="msg"></div>
+  <button class="btn" onclick="save()">บันทึกและเชื่อมต่อ</button>
+</main>
+<footer>Arduino Nano ESP32 — WiFi Provisioning</footer>
+<script>
+function showMsg(t,c){var e=document.getElementById('msg');e.textContent=t;e.className='msg '+(c||'');}
+function onSel(){var v=document.getElementById('ssid-sel').value;if(v)document.getElementById('ssid').value=v;}
+function loadScan(nets){
+  var s=document.getElementById('ssid-sel');
+  s.innerHTML='<option value="">-- เลือกจากรายการ --</option>';
+  nets.forEach(function(n){var o=document.createElement('option');o.value=n.ssid;
+    o.textContent=n.ssid+' ('+n.rssi+'dBm'+(n.secure?' 🔒':'')+')';s.appendChild(o);});
+}
+function rescan(){
+  showMsg('กำลังสแกน WiFi...','inf');
+  fetch('/scan?fresh=1').then(function(r){return r.json();}).then(function(d){loadScan(d);showMsg('');});
+}
+function save(){
+  var ssid=(document.getElementById('ssid').value.trim()||document.getElementById('ssid-sel').value).trim();
+  var pass=document.getElementById('pass').value;
+  var relay=document.getElementById('relay').value.trim();
+  var name=document.getElementById('devname').value.trim()||'ESP32 Device';
+  if(!ssid){showMsg('กรุณาเลือกหรือใส่ชื่อ WiFi','err');return;}
+  if(!relay){showMsg('กรุณาใส่ Relay Host','err');return;}
+  showMsg('กำลังส่งข้อมูล...','inf');
+  fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ssid:ssid,pass:pass,relay:relay,name:name})})
+  .then(function(r){return r.json();})
+  .then(function(d){
+    if(d.ok){showMsg('กำลังเชื่อมต่อ WiFi โปรดรอสักครู่...','inf');poll();}
+    else showMsg(d.error||'เกิดข้อผิดพลาด','err');
+  }).catch(function(){showMsg('เกิดข้อผิดพลาด ลองใหม่อีกครั้ง','err');});
+}
+function poll(){
+  var iv=setInterval(function(){
+    fetch('/status').then(function(r){return r.json();}).then(function(d){
+      if(d.connected){clearInterval(iv);showMsg('เชื่อมต่อสำเร็จ! IP: '+d.ip+' — กำลัง restart...','ok');}
+      else if(d.failed){clearInterval(iv);showMsg('เชื่อมต่อไม่ได้ ตรวจสอบ SSID/Password แล้วลองใหม่','err');}
+    });
+  },1500);
+}
+fetch('/info').then(function(r){return r.json();}).then(function(d){
+  document.getElementById('did').textContent=d.deviceId;
+  document.getElementById('pcode').textContent=d.pairingCode;
+  if(d.relayHost)document.getElementById('relay').value=d.relayHost;
+  if(d.deviceName)document.getElementById('devname').value=d.deviceName;
+});
+fetch('/scan').then(function(r){return r.json();}).then(loadScan);
+</script>
+</body></html>
+)rawliteral";
+
+// ======= Device Identity =======
+void initIdentity() {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    snprintf(cfg.deviceId, sizeof(cfg.deviceId), "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    prefs.begin("cfg", false);
+    if (!prefs.isKey("pair")) {
+        snprintf(cfg.pairingCode, sizeof(cfg.pairingCode), "%06lu",
+                 (unsigned long)(esp_random() % 1000000UL));
+        prefs.putString("pair", cfg.pairingCode);
+    } else {
+        prefs.getString("pair", cfg.pairingCode, sizeof(cfg.pairingCode));
+    }
+    prefs.end();
+}
+
+// ======= Preferences =======
+bool loadConfig() {
+    prefs.begin("cfg", true);
+    bool ok = prefs.isKey("ssid");
+    if (ok) {
+        prefs.getString("ssid",  cfg.ssid,       sizeof(cfg.ssid));
+        prefs.getString("pass",  cfg.password,   sizeof(cfg.password));
+        prefs.getString("relay", cfg.relayHost,  sizeof(cfg.relayHost));
+        prefs.getString("name",  cfg.deviceName, sizeof(cfg.deviceName));
+    }
+    prefs.end();
+    return ok && strlen(cfg.ssid) > 0;
+}
+
+void saveConfig() {
+    prefs.begin("cfg", false);
+    prefs.putString("ssid",  cfg.ssid);
+    prefs.putString("pass",  cfg.password);
+    prefs.putString("relay", cfg.relayHost);
+    prefs.putString("name",  cfg.deviceName);
+    prefs.end();
+}
+
+void clearConfig() {
+    prefs.begin("cfg", false);
+    prefs.clear();
+    prefs.end();
+    Serial.println("[Reset] Factory reset! Restarting...");
+    delay(300);
+    ESP.restart();
+}
+
+// ======= WiFi Scan =======
+void doWiFiScan() {
+    int n = WiFi.scanNetworks();
+    String j = "[";
+    for (int i = 0; i < n; i++) {
+        if (i) j += ",";
+        j += "{\"ssid\":\"" + WiFi.SSID(i) + "\","
+             "\"rssi\":"    + String(WiFi.RSSI(i)) + ","
+             "\"secure\":"  + (WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
+    }
+    wifiScanJson = j + "]";
+    WiFi.scanDelete();
+}
+
+// ======= Content Type =======
 String getContentType(const String& path) {
     if (path.endsWith(".html")) return "text/html; charset=utf-8";
     if (path.endsWith(".css"))  return "text/css";
     if (path.endsWith(".js"))   return "application/javascript";
     if (path.endsWith(".json")) return "application/json";
-    if (path.endsWith(".png"))  return "image/png";
-    if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-    if (path.endsWith(".ico"))  return "image/x-icon";
-    if (path.endsWith(".svg"))  return "image/svg+xml";
     return "text/plain";
 }
 
-// ส่ง response กลับไปหา relay ผ่าน WebSocket
-void tunnelRespond(const String& id, int status, const String& contentType, const String& body) {
-    StaticJsonDocument<256> meta;
-    meta["type"]        = "response";
-    meta["id"]          = id;
-    meta["status"]      = status;
-    meta["contentType"] = contentType;
-    meta["size"]        = body.length();
-    String metaStr;
-    serializeJson(meta, metaStr);
-
-    // ส่ง metadata + body คั่นด้วย newline
-    tunnel.sendTXT(metaStr + "\n" + body);
+// ======= GPIO =======
+int findPin(const String& name) {
+    for (int i = 0; i < PIN_COUNT; i++) if (name == PINS[i].name) return i;
+    return -1;
 }
 
-// จัดการ request ที่เข้ามาผ่าน tunnel
-void handleTunnelRequest(const String& id, const String& method, String path) {
-    // API: สถานะอุปกรณ์
+void applyGpioSet(const String& pinName, int mode, int value) {
+    int idx = findPin(pinName);
+    if (idx < 0) return;
+    pinModes[idx] = mode;
+    uint8_t m = mode == 0 ? INPUT : mode == 1 ? OUTPUT : INPUT_PULLUP;
+    pinMode(PINS[idx].gpio, m);
+    if (mode == 1) digitalWrite(PINS[idx].gpio, value ? HIGH : LOW);
+}
+
+String buildGpioJson() {
+    String j = "{\"pins\":[";
+    for (int i = 0; i < PIN_COUNT; i++) {
+        int val = (PINS[i].analog && pinModes[i] != 1)
+                  ? analogRead(PINS[i].gpio) : digitalRead(PINS[i].gpio);
+        if (i) j += ",";
+        j += "{\"name\":\"" + String(PINS[i].name) + "\","
+             "\"gpio\":"   + String(PINS[i].gpio)  + ","
+             "\"analog\":"  + (PINS[i].analog ? "true" : "false") + ","
+             "\"mode\":"   + String(pinModes[i])   + ","
+             "\"value\":"  + String(val)            + "}";
+    }
+    return j + "]}";
+}
+
+// ======= Tunnel =======
+void tunnelRespond(const String& id, int status, const String& ct, const String& body) {
+    StaticJsonDocument<256> meta;
+    meta["type"] = "response"; meta["id"] = id;
+    meta["status"] = status; meta["contentType"] = ct; meta["size"] = body.length();
+    String m; serializeJson(meta, m);
+    tunnel.sendTXT(m + "\n" + body);
+}
+
+void handleTunnelRequest(const String& id, const String& method, String path, const String& body) {
     if (path == "/api/status") {
-        String body = "{\"status\":\"ok\",\"ip\":\"" + WiFi.localIP().toString() + "\","
-                      "\"rssi\":" + String(WiFi.RSSI()) + ","
-                      "\"uptime\":" + String(millis() / 1000) + "}";
-        tunnelRespond(id, 200, "application/json", body);
+        String r = "{\"status\":\"ok\","
+                   "\"ip\":\"" + WiFi.localIP().toString() + "\","
+                   "\"rssi\":"  + String(WiFi.RSSI()) + ","
+                   "\"uptime\":" + String(millis() / 1000) + ","
+                   "\"name\":\"" + String(cfg.deviceName) + "\","
+                   "\"deviceId\":\"" + String(cfg.deviceId) + "\"}";
+        tunnelRespond(id, 200, "application/json", r);
         return;
     }
-
-    // ไฟล์ปกติจาก LittleFS
+    if (path == "/api/gpio" && method == "GET") {
+        tunnelRespond(id, 200, "application/json", buildGpioJson());
+        return;
+    }
+    if (path == "/api/gpio/set" && method == "POST") {
+        StaticJsonDocument<128> req;
+        if (!deserializeJson(req, body))
+            applyGpioSet(req["pin"].as<String>(), req["mode"].as<int>(), req["value"].as<int>());
+        tunnelRespond(id, 200, "application/json", "{\"ok\":true}");
+        return;
+    }
     if (path == "/" || path == "") path = "/index.html";
-
     if (LittleFS.exists(path)) {
-        File file = LittleFS.open(path, "r");
-        String body = file.readString();
-        file.close();
-        tunnelRespond(id, 200, getContentType(path), body);
+        File f = LittleFS.open(path, "r");
+        String data = f.readString(); f.close();
+        tunnelRespond(id, 200, getContentType(path), data);
     } else {
-        // 404
-        String body = "<h1>404</h1><p>Not Found: " + path + "</p><a href='/'>Home</a>";
-        if (LittleFS.exists("/404.html")) {
-            File f = LittleFS.open("/404.html", "r");
-            body = f.readString();
-            f.close();
-        }
-        tunnelRespond(id, 404, "text/html; charset=utf-8", body);
+        String err = "<h1>404</h1>";
+        if (LittleFS.exists("/404.html")) { File f = LittleFS.open("/404.html","r"); err = f.readString(); f.close(); }
+        tunnelRespond(id, 404, "text/html; charset=utf-8", err);
     }
 }
 
@@ -81,113 +307,239 @@ void onTunnelEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
         case WStype_CONNECTED:
             Serial.println("[Tunnel] เชื่อมต่อกับ Relay สำเร็จ!");
-            tunnel.sendTXT("{\"type\":\"hello\"}");
+            // ส่ง deviceId ไปด้วยเพื่อ multi-device routing (Phase 2)
+            tunnel.sendTXT("{\"type\":\"hello\",\"deviceId\":\"" + String(cfg.deviceId) + "\"}");
             break;
-
         case WStype_DISCONNECTED:
             Serial.println("[Tunnel] หลุดการเชื่อมต่อ กำลังต่อใหม่...");
             break;
-
         case WStype_TEXT: {
             String raw = String((char*)payload, length);
             int nl = raw.indexOf('\n');
-
-            // รูปแบบ: JSON metadata อยู่บรรทัดแรก
             String jsonPart = (nl >= 0) ? raw.substring(0, nl) : raw;
-
             StaticJsonDocument<512> doc;
-            if (deserializeJson(doc, jsonPart)) {
-                Serial.println("[Tunnel] JSON parse error");
-                return;
-            }
-
+            if (deserializeJson(doc, jsonPart)) return;
             if (doc["type"] == "request") {
-                String id     = doc["id"].as<String>();
-                String method = doc["method"].as<String>();
-                String path   = doc["path"].as<String>();
-                Serial.printf("[Tunnel] %s %s\n", method.c_str(), path.c_str());
-                handleTunnelRequest(id, method, path);
+                Serial.printf("[Tunnel] %s %s\n",
+                    doc["method"].as<const char*>(), doc["path"].as<const char*>());
+                handleTunnelRequest(doc["id"], doc["method"], doc["path"], doc["body"] | "");
             }
             break;
         }
-
-        case WStype_ERROR:
-            Serial.println("[Tunnel] WebSocket error");
-            break;
-
-        default:
-            break;
+        default: break;
     }
 }
 
-void setupLocalServer() {
-    localServer.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+// ======= AP Mode =======
+void startAPMode() {
+    appState = STATE_AP;
+    WiFi.mode(WIFI_AP_STA);
 
-    localServer.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {
-        String json = "{\"status\":\"ok\",\"ip\":\"" + WiFi.localIP().toString() + "\","
-                      "\"rssi\":" + String(WiFi.RSSI()) + ","
-                      "\"uptime\":" + String(millis() / 1000) + "}";
-        req->send(200, "application/json", json);
+    // Scan ก่อน start AP
+    Serial.println("[AP] Scanning WiFi networks...");
+    doWiFiScan();
+
+    // AP SSID = "ESP32-XXYY" (4 ตัวท้ายของ MAC)
+    String apSSID = String("ESP32-") + String(cfg.deviceId + 8);
+    WiFi.softAP(apSSID.c_str());
+    delay(500);
+
+    dns.start(DNS_PORT, "*", WiFi.softAPIP());
+    Serial.printf("[AP] SSID: %s  IP: %s\n", apSSID.c_str(), WiFi.softAPIP().toString().c_str());
+
+    // ---- Routes ----
+    webServer.on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
+        req->send_P(200, "text/html", SETUP_HTML);
     });
 
-    localServer.onNotFound([](AsyncWebServerRequest* req) {
-        if (LittleFS.exists("/404.html"))
-            req->send(LittleFS, "/404.html", "text/html");
-        else
-            req->send(404, "text/plain", "404 Not Found");
+    webServer.on("/info", HTTP_GET, [](AsyncWebServerRequest* req) {
+        String j = "{\"deviceId\":\""    + String(cfg.deviceId)    + "\","
+                   "\"pairingCode\":\"" + String(cfg.pairingCode)  + "\","
+                   "\"relayHost\":\""   + String(cfg.relayHost)    + "\","
+                   "\"deviceName\":\"" + String(cfg.deviceName)   + "\"}";
+        req->send(200, "application/json", j);
     });
 
-    localServer.begin();
-    Serial.println("[Local] Web server เริ่มที่ port 80");
+    webServer.on("/scan", HTTP_GET, [](AsyncWebServerRequest* req) {
+        if (req->hasParam("fresh")) doWiFiScan();
+        req->send(200, "application/json", wifiScanJson);
+    });
+
+    webServer.on("/save", HTTP_POST,
+        [](AsyncWebServerRequest* req) {},
+        NULL,
+        [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t, size_t) {
+            StaticJsonDocument<256> doc;
+            if (deserializeJson(doc, data, len)) {
+                req->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+                return;
+            }
+            strlcpy(cfg.ssid,       doc["ssid"]  | "",             sizeof(cfg.ssid));
+            strlcpy(cfg.password,   doc["pass"]  | "",             sizeof(cfg.password));
+            strlcpy(cfg.relayHost,  doc["relay"] | "",             sizeof(cfg.relayHost));
+            strlcpy(cfg.deviceName, doc["name"]  | "ESP32 Device", sizeof(cfg.deviceName));
+
+            WiFi.begin(cfg.ssid, cfg.password);
+            connectStart  = millis();
+            connectFailed = false;
+            appState      = STATE_CONNECTING;
+
+            req->send(200, "application/json", "{\"ok\":true}");
+        }
+    );
+
+    webServer.on("/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+        String j;
+        if (connectFailed) {
+            j = "{\"connecting\":false,\"connected\":false,\"failed\":true}";
+        } else if (appState == STATE_CONNECTING) {
+            j = "{\"connecting\":true,\"connected\":false,\"failed\":false}";
+        } else if (WiFi.status() == WL_CONNECTED) {
+            j = "{\"connecting\":false,\"connected\":true,\"failed\":false,"
+                "\"ip\":\"" + WiFi.localIP().toString() + "\"}";
+        } else {
+            j = "{\"connecting\":false,\"connected\":false,\"failed\":false}";
+        }
+        req->send(200, "application/json", j);
+    });
+
+    // Captive portal: redirect ทุก path ที่ไม่รู้จักไปหน้า setup
+    webServer.onNotFound([](AsyncWebServerRequest* req) {
+        req->redirect("http://" AP_IP "/");
+    });
+
+    webServer.begin();
+    Serial.println("[AP] Web server ready");
 }
 
+// ======= Normal Mode =======
 void connectWiFi() {
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.print("กำลังเชื่อมต่อ WiFi");
+    WiFi.begin(cfg.ssid, cfg.password);
+    Serial.print("[WiFi] กำลังเชื่อมต่อ");
     unsigned long t = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) {
-        delay(500);
-        Serial.print(".");
+        delay(500); Serial.print(".");
     }
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n[WiFi] เชื่อมต่อแล้ว!");
-        Serial.println("[WiFi] Local IP: http://" + WiFi.localIP().toString());
+        Serial.println("\n[WiFi] เชื่อมต่อแล้ว! IP: http://" + WiFi.localIP().toString());
     } else {
         Serial.println("\n[WiFi] เชื่อมต่อไม่ได้ ตรวจสอบ SSID/Password");
     }
 }
 
+void setupNormalServer() {
+    webServer.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+    webServer.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+        String j = "{\"status\":\"ok\","
+                   "\"ip\":\""      + WiFi.localIP().toString() + "\","
+                   "\"rssi\":"      + String(WiFi.RSSI())       + ","
+                   "\"uptime\":"    + String(millis() / 1000)   + ","
+                   "\"name\":\""    + String(cfg.deviceName)    + "\","
+                   "\"deviceId\":\"" + String(cfg.deviceId)     + "\"}";
+        req->send(200, "application/json", j);
+    });
+
+    webServer.on("/api/gpio", HTTP_GET, [](AsyncWebServerRequest* req) {
+        req->send(200, "application/json", buildGpioJson());
+    });
+
+    webServer.on("/api/gpio/set", HTTP_POST,
+        [](AsyncWebServerRequest* req) {},
+        NULL,
+        [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t, size_t) {
+            StaticJsonDocument<128> doc;
+            if (!deserializeJson(doc, data, len))
+                applyGpioSet(doc["pin"].as<String>(), doc["mode"].as<int>(), doc["value"].as<int>());
+            req->send(200, "application/json", "{\"ok\":true}");
+        }
+    );
+
+    webServer.onNotFound([](AsyncWebServerRequest* req) {
+        if (LittleFS.exists("/404.html")) req->send(LittleFS, "/404.html", "text/html");
+        else req->send(404, "text/plain", "Not Found");
+    });
+
+    webServer.begin();
+    Serial.println("[Local] Web server started on port 80");
+}
+
+// ======= Setup =======
 void setup() {
     Serial.begin(115200);
     delay(500);
 
-    if (!LittleFS.begin(true)) {
-        Serial.println("[FS] LittleFS mount failed!");
-        return;
+    pinMode(RESET_PIN, INPUT_PULLUP);
+    memset(pinModes, 0, sizeof(pinModes));
+    for (int i = 0; i < PIN_COUNT; i++) pinMode(PINS[i].gpio, INPUT);
+
+    if (!LittleFS.begin(true)) Serial.println("[FS] LittleFS mount failed!");
+    else                       Serial.println("[FS] LittleFS ready");
+
+    // Device ID และ Pairing Code ต้องมีก่อนเสมอ (ก่อน WiFi.begin)
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(); // เพื่อให้ macAddress พร้อม
+    delay(100);
+    initIdentity();
+
+    if (loadConfig()) {
+        // มี config แล้ว → Normal mode
+        connectWiFi();
+        setupNormalServer();
+        tunnel.beginSSL(cfg.relayHost, 443, "/tunnel");
+        tunnel.onEvent(onTunnelEvent);
+        tunnel.setReconnectInterval(5000);
+        appState = STATE_NORMAL;
+        Serial.println("[Tunnel] กำลังเชื่อมต่อ Relay...");
+    } else {
+        // ยังไม่มี config → AP mode
+        startAPMode();
     }
-    Serial.println("[FS] LittleFS ready");
-
-    connectWiFi();
-    setupLocalServer();
-
-    // เชื่อมต่อ Relay ผ่าน WSS (TLS)
-    tunnel.beginSSL(RELAY_HOST, RELAY_PORT, RELAY_PATH);
-    tunnel.onEvent(onTunnelEvent);
-    tunnel.setReconnectInterval(5000);
-    Serial.println("[Tunnel] กำลังเชื่อมต่อ Relay...");
 }
 
+// ======= Loop =======
 void loop() {
-    tunnel.loop();
+    // Reset button: ค้าง RESET_PIN 5 วิ → factory reset
+    static unsigned long btnHold = 0;
+    if (digitalRead(RESET_PIN) == LOW) {
+        if (!btnHold) btnHold = millis();
+        if (millis() - btnHold >= RESET_HOLD_MS) clearConfig();
+    } else {
+        btnHold = 0;
+    }
 
-    // ต่อ WiFi ใหม่อัตโนมัติถ้าหลุด
-    static unsigned long lastWifiCheck = 0;
-    if (millis() - lastWifiCheck > 10000) {
-        lastWifiCheck = millis();
-        if (WiFi.status() != WL_CONNECTED) {
-            Serial.println("[WiFi] หลุด กำลังต่อใหม่...");
-            WiFi.reconnect();
-        }
+    switch (appState) {
+        case STATE_AP:
+            dns.processNextRequest();
+            break;
+
+        case STATE_CONNECTING:
+            dns.processNextRequest();
+            if (WiFi.status() == WL_CONNECTED) {
+                Serial.println("[Connect] สำเร็จ! IP: " + WiFi.localIP().toString());
+                saveConfig();
+                delay(2000); // รอให้ browser เห็น /status → connected ก่อน restart
+                ESP.restart();
+            }
+            if (millis() - connectStart > 15000) {
+                Serial.println("[Connect] Timeout — กลับ AP mode");
+                connectFailed = true;
+                appState = STATE_AP;
+                WiFi.disconnect();
+            }
+            break;
+
+        case STATE_NORMAL:
+            tunnel.loop();
+            static unsigned long lastWifiCheck = 0;
+            if (millis() - lastWifiCheck > 10000) {
+                lastWifiCheck = millis();
+                if (WiFi.status() != WL_CONNECTED) {
+                    Serial.println("[WiFi] หลุด กำลังต่อใหม่...");
+                    WiFi.reconnect();
+                }
+            }
+            break;
     }
 }
