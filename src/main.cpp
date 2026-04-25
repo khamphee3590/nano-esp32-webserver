@@ -308,7 +308,10 @@ void onTunnelEvent(WStype_t type, uint8_t* payload, size_t length) {
         case WStype_CONNECTED:
             Serial.println("[Tunnel] เชื่อมต่อกับ Relay สำเร็จ!");
             // ส่ง deviceId ไปด้วยเพื่อ multi-device routing (Phase 2)
-            tunnel.sendTXT("{\"type\":\"hello\",\"deviceId\":\"" + String(cfg.deviceId) + "\"}");
+            tunnel.sendTXT("{\"type\":\"hello\","
+                           "\"deviceId\":\""    + String(cfg.deviceId)    + "\","
+                           "\"pairingCode\":\"" + String(cfg.pairingCode) + "\","
+                           "\"name\":\""        + String(cfg.deviceName)  + "\"}");
             break;
         case WStype_DISCONNECTED:
             Serial.println("[Tunnel] หลุดการเชื่อมต่อ กำลังต่อใหม่...");

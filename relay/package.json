@@ -1,7 +1,7 @@
 {
   "name": "esp32-relay",
   "version": "1.0.0",
-  "description": "WebSocket relay server for ESP32 public web server",
+  "description": "WebSocket relay + auth backend for ESP32",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,6 +11,11 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "ws": "^8.14.2"
+    "ws": "^8.14.2",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "nodemailer": "^6.9.8",
+    "cookie-parser": "^1.4.6",
+    "dotenv": "^16.4.1"
   }
 }
