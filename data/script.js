@@ -236,7 +236,12 @@ function renderPinCard(card, p) {
     </div>`;
 
   if (canControl) {
-    card.querySelector('.pin-primary').addEventListener('click', () => editLabel(p.name));
+    const names = card.querySelector('.pin-names');
+    names.style.cursor = 'text';
+    names.addEventListener('click', e => {
+      if (e.target.tagName === 'INPUT') return; // กำลัง edit อยู่แล้ว
+      editLabel(p.name);
+    });
   }
 }
 
