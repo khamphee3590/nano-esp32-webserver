@@ -7,6 +7,7 @@
 #include <LittleFS.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
+#include <Update.h>
 
 // ======= Constants =======
 #define RESET_PIN      0        // BOOT button — ค้าง 5 วิเพื่อ factory reset
@@ -45,6 +46,7 @@ struct Config {
 
 unsigned long connectStart = 0;
 bool          connectFailed = false;
+bool          otaReboot     = false;   // flag: restart หลัง OTA สำเร็จ
 String        wifiScanJson  = "[]";
 
 // ======= Setup Page HTML (PROGMEM) =======
@@ -459,6 +461,39 @@ void setupNormalServer() {
         }
     );
 
+    // ======= OTA Update (local LAN only) =======
+    webServer.on("/ota", HTTP_POST,
+        // onRequest: ส่ง response แล้ว reboot ถ้า success
+        [](AsyncWebServerRequest* req) {
+            bool ok = !Update.hasError();
+            AsyncWebServerResponse* res = req->beginResponse(
+                200, "text/plain", ok ? "OK" : Update.errorString());
+            res->addHeader("Connection", "close");
+            req->send(res);
+            if (ok) otaReboot = true;
+        },
+        // onUpload: รับไฟล์ทีละ chunk
+        [](AsyncWebServerRequest* req, const String& filename,
+           size_t index, uint8_t* data, size_t len, bool final) {
+            if (!index) {
+                bool isFS = req->hasParam("type") &&
+                            req->getParam("type")->value() == "fs";
+                int cmd = isFS ? U_SPIFFS : U_FLASH;
+                Serial.printf("[OTA] Start: %s (%s)\n",
+                    filename.c_str(), isFS ? "filesystem" : "firmware");
+                if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd))
+                    Serial.println("[OTA] Begin failed: " + String(Update.errorString()));
+            }
+            if (Update.isRunning()) Update.write(data, len);
+            if (final) {
+                if (Update.end(true))
+                    Serial.printf("[OTA] Done: %u bytes\n", index + len);
+                else
+                    Serial.println("[OTA] Failed: " + String(Update.errorString()));
+            }
+        }
+    );
+
     webServer.onNotFound([](AsyncWebServerRequest* req) {
         if (LittleFS.exists("/404.html")) req->send(LittleFS, "/404.html", "text/html");
         else req->send(404, "text/plain", "Not Found");
@@ -535,6 +570,7 @@ void loop() {
 
         case STATE_NORMAL:
             tunnel.loop();
+            if (otaReboot) { delay(300); ESP.restart(); }
             static unsigned long lastWifiCheck = 0;
             if (millis() - lastWifiCheck > 10000) {
                 lastWifiCheck = millis();

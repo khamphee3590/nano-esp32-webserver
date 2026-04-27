@@ -13,6 +13,7 @@ async function fetchStatus() {
     document.getElementById('ip').textContent     = data.ip;
     document.getElementById('rssi').textContent   = data.rssi + ' dBm';
     document.getElementById('uptime').textContent = formatUptime(data.uptime);
+    updateOtaLink(data.ip);
     const el = document.getElementById('status');
     el.textContent = data.status === 'ok' ? 'Online' : 'Error';
     el.className   = 'value ' + (data.status === 'ok' ? 'status-ok' : 'status-err');
@@ -288,7 +289,87 @@ async function removeUser(userId) {
   } catch { showSettingsMsg('ลบไม่ได้', 'msg-err'); }
 }
 
+// ======= OTA =======
+const isLocalMode = !window.location.pathname.startsWith('/d/');
+
+function initOTA() {
+  document.getElementById('ota-local').classList.toggle('hidden', !isLocalMode);
+  document.getElementById('ota-relay').classList.toggle('hidden',  isLocalMode);
+}
+
+function otaFileChange(type) {
+  const input = document.getElementById(`ota-${type}-input`);
+  const fname = document.getElementById(`ota-${type}-fname`);
+  const btn   = document.getElementById(`ota-${type}-btn`);
+  if (input.files[0]) {
+    fname.textContent = input.files[0].name;
+    btn.disabled = false;
+  }
+}
+
+function uploadOTA(type) {
+  const file = document.getElementById(`ota-${type}-input`).files[0];
+  if (!file) return;
+
+  const fill   = document.getElementById(`ota-${type}-fill`);
+  const status = document.getElementById(`ota-${type}-status`);
+  const btn    = document.getElementById(`ota-${type}-btn`);
+
+  btn.disabled = true;
+  fill.style.width = '0%';
+  setOtaStatus(type, 'กำลังอัพโหลด...', 'inf');
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const xhr = new XMLHttpRequest();
+
+  xhr.upload.addEventListener('progress', e => {
+    if (e.lengthComputable) {
+      const pct = Math.round(e.loaded / e.total * 100);
+      fill.style.width = pct + '%';
+      setOtaStatus(type, `กำลังส่ง... ${pct}%`, 'inf');
+    }
+  });
+
+  xhr.addEventListener('load', () => {
+    if (xhr.responseText === 'OK') {
+      fill.style.width = '100%';
+      fill.classList.add('fill-ok');
+      setOtaStatus(type, 'อัพโหลดสำเร็จ! ESP32 กำลัง restart — หน้านี้จะโหลดใหม่ใน 12 วินาที', 'ok');
+      setTimeout(() => location.reload(), 12000);
+    } else {
+      fill.classList.add('fill-err');
+      setOtaStatus(type, 'ล้มเหลว: ' + xhr.responseText, 'err');
+      btn.disabled = false;
+    }
+  });
+
+  xhr.addEventListener('error', () => {
+    setOtaStatus(type, 'เชื่อมต่อไม่ได้', 'err');
+    btn.disabled = false;
+  });
+
+  xhr.open('POST', `ota?type=${type}`);
+  xhr.send(formData);
+}
+
+function setOtaStatus(type, text, cls) {
+  const el = document.getElementById(`ota-${type}-status`);
+  el.textContent = text;
+  el.className   = 'ota-status ota-' + cls;
+}
+
+// อัพเดท local IP link เมื่อโหลด status
+function updateOtaLink(ip) {
+  if (isLocalMode) return;
+  const url  = `http://${ip}/`;
+  const link = document.getElementById('ota-local-link');
+  if (link) { link.textContent = url; link.href = url; }
+}
+
 // ======= Init =======
+initOTA();
 fetchStatus();
 fetchGpioLabels().then(fetchGpio);
 setInterval(fetchStatus, 10000);

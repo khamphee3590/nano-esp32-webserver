@@ -39,6 +39,56 @@
       <button type="button" onclick="fetchStatus()">รีเฟรช</button>
     </section>
 
+    <section class="card ota-card">
+      <h2>OTA Update</h2>
+
+      <!-- แสดงเมื่อเข้าผ่าน Local IP โดยตรง -->
+      <div id="ota-local">
+        <div class="ota-hint">
+          อัพโหลดไฟล์ <code>.bin</code> จาก PlatformIO:<br>
+          Firmware → <code>.pio/build/.../firmware.bin</code><br>
+          Filesystem → <code>.pio/build/.../littlefs.bin</code>
+        </div>
+
+        <div class="ota-section">
+          <div class="ota-type-label">Firmware</div>
+          <div class="ota-file-row">
+            <label class="btn-file" for="ota-fw-input">เลือกไฟล์</label>
+            <input type="file" id="ota-fw-input" accept=".bin" onchange="otaFileChange('fw')" />
+            <span class="ota-fname" id="ota-fw-fname">ยังไม่ได้เลือก</span>
+          </div>
+          <div class="ota-progress-wrap"><div class="ota-progress-fill" id="ota-fw-fill"></div></div>
+          <div class="ota-status" id="ota-fw-status"></div>
+          <button type="button" class="btn-ota" id="ota-fw-btn" disabled onclick="uploadOTA('fw')">
+            อัพโหลด Firmware
+          </button>
+        </div>
+
+        <div class="ota-section">
+          <div class="ota-type-label">Filesystem (LittleFS)</div>
+          <div class="ota-file-row">
+            <label class="btn-file" for="ota-fs-input">เลือกไฟล์</label>
+            <input type="file" id="ota-fs-input" accept=".bin" onchange="otaFileChange('fs')" />
+            <span class="ota-fname" id="ota-fs-fname">ยังไม่ได้เลือก</span>
+          </div>
+          <div class="ota-progress-wrap"><div class="ota-progress-fill" id="ota-fs-fill"></div></div>
+          <div class="ota-status" id="ota-fs-status"></div>
+          <button type="button" class="btn-ota" id="ota-fs-btn" disabled onclick="uploadOTA('fs')">
+            อัพโหลด Filesystem
+          </button>
+        </div>
+      </div>
+
+      <!-- แสดงเมื่อเข้าผ่าน Relay -->
+      <div id="ota-relay" class="hidden">
+        <div class="ota-relay-notice">
+          OTA ต้องทำผ่าน Local IP เท่านั้น<br>
+          เปิด browser แล้วไปที่<br>
+          <a id="ota-local-link" href="#" target="_blank" rel="noopener">กำลังโหลด IP...</a>
+        </div>
+      </div>
+    </section>
+
     <section class="card gpio-card">
       <h2>
         GPIO Control

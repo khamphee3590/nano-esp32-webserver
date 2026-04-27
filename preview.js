@@ -209,6 +209,20 @@ http.createServer(async (req, res) => {
         return json(res, { error: 'Pairing Code ไม่ถูกต้อง (ใช้ 123456 ใน preview)' }, 404);
     }
 
+    // --- OTA (local mode: POST /ota) ---
+    if (url.startsWith('/ota') && method === 'POST') {
+        let size = 0;
+        req.on('data', chunk => { size += chunk.length; });
+        req.on('end', () => {
+            console.log(`[OTA Mock] Received ${size} bytes`);
+            setTimeout(() => {
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end('OK');
+            }, 1500);
+        });
+        return;
+    }
+
     // --- Device Proxy: /d/:deviceId/* ---
     const devMatch = url.match(/^\/d\/([^/]+)(\/.*)?$/);
     if (devMatch) {
@@ -298,6 +312,22 @@ async function handleDevice(req, res, subPath) {
         const idx = mockUsers.findIndex(u => u.userId === id);
         if (idx >= 0) mockUsers.splice(idx, 1);
         return json(res, { ok: true });
+    }
+
+    // --- OTA mock (local mode: /ota, relay mode: /d/:id/ota) ---
+    if (subPath === '/ota' && method === 'POST') {
+        let size = 0;
+        req.on('data', chunk => { size += chunk.length; });
+        req.on('end', () => {
+            console.log(`[OTA Mock] Received ${size} bytes — type: ${req.url.includes('type=fs') ? 'filesystem' : 'firmware'}`);
+            // จำลอง delay การ flash
+            setTimeout(() => {
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end('OK');
+                console.log('[OTA Mock] Upload successful (simulated)');
+            }, 1500);
+        });
+        return;
     }
 
     // --- Static files from data/ ---
