@@ -292,8 +292,9 @@ app.use('/d/:deviceId', authRequired, (req, res, next) => {
     next();
 }, (req, res) => {
     const { deviceId } = req.params;
-    const subPath = req.path;
-    const isOwner = req.deviceRole === 'owner';
+    const subPath    = req.path;
+    const isOwner    = req.deviceRole === 'owner';
+    const canControl = req.deviceRole !== 'viewer'; // owner + editor
 
     // ======= Relay-managed routes (ไม่ forward ไป ESP32) =======
 
@@ -302,6 +303,7 @@ app.use('/d/:deviceId', authRequired, (req, res, next) => {
         if (req.method === 'GET')
             return res.json(db.getGpioLabels(deviceId));
         if (req.method === 'PUT') {
+            if (!canControl) return res.status(403).json({ error: 'Viewer ไม่มีสิทธิ์แก้ไข label' });
             const { pin, label } = req.body || {};
             if (!pin) return res.status(400).json({ error: 'pin required' });
             db.setGpioLabel(deviceId, pin, label ?? '');
@@ -346,6 +348,11 @@ app.use('/d/:deviceId', authRequired, (req, res, next) => {
     }
 
     // ======= Forward ไป ESP32 =======
+
+    // Viewer อ่านได้อย่างเดียว — block ทุก method ที่ไม่ใช่ GET
+    if (req.method !== 'GET' && !canControl)
+        return res.status(403).json({ error: 'Viewer ไม่มีสิทธิ์สั่งการ' });
+
     const ws = devices.get(deviceId);
 
     if (!ws || ws.readyState !== WebSocket.OPEN)

@@ -1,10 +1,46 @@
 // ======= State =======
 let gpioState  = {};
-let gpioLabels = {}; // pin → label string
-let deviceRole = 'viewer';
+let gpioLabels = {};
+let deviceRole = 'owner'; // default owner สำหรับ local mode
 let countdownVal = 2;
 
 const MODE_LABEL = ['INPUT', 'OUTPUT', 'PULLUP'];
+const isLocalMode = !window.location.pathname.startsWith('/d/');
+
+// ======= Role Init =======
+async function initRole() {
+  if (isLocalMode) { deviceRole = 'owner'; return; }
+  try {
+    const d = await fetch('api/device/info').then(r => r.json());
+    deviceRole = d.role || 'viewer';
+    applyRoleUI(d);
+  } catch { deviceRole = 'viewer'; }
+}
+
+function applyRoleUI(d = {}) {
+  // Settings button: ซ่อนสำหรับ viewer (ไม่มีอะไรให้ตั้งค่า)
+  const btn = document.querySelector('.btn-settings');
+  if (btn) btn.classList.toggle('hidden', deviceRole === 'viewer');
+
+  // อัพเดทชื่ออุปกรณ์ใน subtitle
+  if (d.name) document.getElementById('dev-subtitle').textContent = d.name;
+
+  // Pre-fill settings fields ด้วย (เผื่อ modal เปิดทีหลัง)
+  const nameInput = document.getElementById('s-devname');
+  if (nameInput && d.name) nameInput.value = d.name;
+  const pcodeEl = document.getElementById('s-pcode');
+  if (pcodeEl) pcodeEl.textContent = d.pairing_code || '------';
+  const devidEl = document.getElementById('s-devid');
+  if (devidEl) devidEl.textContent = d.device_id || '-';
+
+  // Save name + invite: owner เท่านั้น
+  const saveBtn = document.querySelector('.btn-save');
+  if (saveBtn) saveBtn.classList.toggle('hidden', deviceRole !== 'owner');
+  const invSec = document.getElementById('invite-section');
+  if (invSec) invSec.classList.toggle('hidden', deviceRole !== 'owner');
+  const usersTab = document.getElementById('tab-users-btn');
+  if (usersTab) usersTab.classList.toggle('hidden', deviceRole !== 'owner');
+}
 
 // ======= Status =======
 async function fetchStatus() {
@@ -33,7 +69,7 @@ async function fetchGpioLabels() {
     const rows = await fetch('api/gpio/labels').then(r => r.json());
     gpioLabels = {};
     rows.forEach(r => { gpioLabels[r.pin_name] = r.label; });
-  } catch { /* labels optional — relay may not be available in local mode */ }
+  } catch { /* labels optional */ }
 }
 
 async function saveLabel(pin, label) {
@@ -44,7 +80,7 @@ async function saveLabel(pin, label) {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ pin, label }),
     });
-  } catch { /* silent — works even without relay */ }
+  } catch { /* silent */ }
 }
 
 function editLabel(pin) {
@@ -63,13 +99,9 @@ function editLabel(pin) {
   const commit = () => {
     const val = input.value.trim();
     saveLabel(pin, val);
-    const newSpan = makeLabelSpan(pin, val);
-    input.replaceWith(newSpan);
+    input.replaceWith(makeLabelSpan(pin, val));
   };
-  const cancel = () => {
-    const newSpan = makeLabelSpan(pin, current);
-    input.replaceWith(newSpan);
-  };
+  const cancel = () => { input.replaceWith(makeLabelSpan(pin, current)); };
 
   input.addEventListener('blur',    commit);
   input.addEventListener('keydown', e => {
@@ -79,12 +111,15 @@ function editLabel(pin) {
 }
 
 function makeLabelSpan(pin, label) {
-  const span   = document.createElement('span');
+  const canEdit = deviceRole !== 'viewer';
+  const span    = document.createElement('span');
   span.id        = 'lbl-' + pin;
   span.className = label ? 'pin-label has-label' : 'pin-label';
-  span.title     = 'คลิกเพื่อแก้ไขชื่อ';
-  span.textContent = label || '+ ตั้งชื่อ';
-  span.onclick   = () => editLabel(pin);
+  span.textContent = label || (canEdit ? '+ ตั้งชื่อ' : '');
+  if (canEdit) {
+    span.title   = 'คลิกเพื่อแก้ไขชื่อ';
+    span.onclick = () => editLabel(pin);
+  }
   return span;
 }
 
@@ -115,7 +150,7 @@ function renderGpioGrid(pins) {
   grid.innerHTML = '';
   pins.forEach(p => {
     const card = document.createElement('div');
-    card.className  = 'pin-card';
+    card.className   = 'pin-card';
     card.dataset.pin = p.name;
     renderPinCard(card, p);
     grid.appendChild(card);
@@ -134,7 +169,9 @@ function updateGpioValues(pins) {
 }
 
 function renderPinCard(card, p) {
-  const label = gpioLabels[p.name] || '';
+  const label      = gpioLabels[p.name] || '';
+  const canControl = deviceRole !== 'viewer';
+
   card.innerHTML = `
     <div class="pin-header">
       <div class="pin-names">
@@ -144,26 +181,30 @@ function renderPinCard(card, p) {
     </div>
     <div class="pin-modes">
       ${[0,1,2].map(m => `
-        <button type="button" class="mode-btn ${p.mode===m?'active-mode-'+m:''}"
-                onclick="setGpio('${p.name}',${m},${p.mode===1?p.value:0})">
+        <button type="button"
+          class="mode-btn ${p.mode===m ? 'active-mode-'+m : ''}"
+          ${canControl ? `onclick="setGpio('${p.name}',${m},${p.mode===1?p.value:0})"` : 'disabled'}
+          title="${canControl ? MODE_LABEL[m] : 'Viewer ไม่มีสิทธิ์เปลี่ยน mode'}">
           ${MODE_LABEL[m]}
         </button>`).join('')}
     </div>
     <div class="pin-value">
-      ${p.mode === 1 ? renderOutput(p) : renderInput(p)}
+      ${p.mode === 1 ? renderOutput(p, canControl) : renderInput(p)}
     </div>`;
 
-  // ใส่ label span หลัง render (เพื่อให้ event listener ทำงานได้)
-  const namesDiv = card.querySelector('.pin-names');
-  namesDiv.appendChild(makeLabelSpan(p.name, label));
+  card.querySelector('.pin-names').appendChild(makeLabelSpan(p.name, label));
 }
 
-function renderOutput(p) {
-  return `<div class="output-row">
-    <button type="button" class="toggle-btn ${p.value ? 'high' : 'low'}"
-            onclick="setGpio('${p.name}',1,${p.value?0:1})">
-      ${p.value ? 'HIGH' : 'LOW'}
-    </button></div>`;
+function renderOutput(p, canControl = true) {
+  if (canControl) {
+    return `<div class="output-row">
+      <button type="button" class="toggle-btn ${p.value ? 'high' : 'low'}"
+              onclick="setGpio('${p.name}',1,${p.value?0:1})">
+        ${p.value ? 'HIGH' : 'LOW'}
+      </button></div>`;
+  }
+  // Viewer: แสดงเป็น indicator อ่านอย่างเดียว
+  return `<div class="digital-dot ${p.value ? 'dot-high' : 'dot-low'}">${p.value ? 'HIGH' : 'LOW'}</div>`;
 }
 
 function renderInput(p) {
@@ -216,14 +257,9 @@ function showSettingsMsg(text, type) {
 async function loadDeviceInfo() {
   try {
     const d = await fetch('api/device/info').then(r => r.json());
-    document.getElementById('s-devname').value = d.name || '';
-    document.getElementById('s-pcode').textContent  = d.pairing_code || '------';
-    document.getElementById('s-devid').textContent  = d.device_id   || '-';
     deviceRole = d.role || 'viewer';
-    // ซ่อน invite section ถ้าไม่ใช่ owner
-    const inv = document.getElementById('invite-section');
-    if (inv) inv.classList.toggle('hidden', deviceRole !== 'owner');
-  } catch { /* local mode — relay not available */ }
+    applyRoleUI(d);
+  } catch { /* local mode */ }
 }
 
 async function saveName() {
@@ -290,8 +326,6 @@ async function removeUser(userId) {
 }
 
 // ======= OTA =======
-const isLocalMode = !window.location.pathname.startsWith('/d/');
-
 function initOTA() {
   document.getElementById('ota-local').classList.toggle('hidden', !isLocalMode);
   document.getElementById('ota-relay').classList.toggle('hidden',  isLocalMode);
@@ -312,11 +346,11 @@ function uploadOTA(type) {
   if (!file) return;
 
   const fill   = document.getElementById(`ota-${type}-fill`);
-  const status = document.getElementById(`ota-${type}-status`);
   const btn    = document.getElementById(`ota-${type}-btn`);
 
   btn.disabled = true;
   fill.style.width = '0%';
+  fill.className   = 'ota-progress-fill';
   setOtaStatus(type, 'กำลังอัพโหลด...', 'inf');
 
   const formData = new FormData();
@@ -360,7 +394,6 @@ function setOtaStatus(type, text, cls) {
   el.className   = 'ota-status ota-' + cls;
 }
 
-// อัพเดท local IP link เมื่อโหลด status
 function updateOtaLink(ip) {
   if (isLocalMode) return;
   const url  = `http://${ip}/`;
@@ -371,6 +404,7 @@ function updateOtaLink(ip) {
 // ======= Init =======
 initOTA();
 fetchStatus();
-fetchGpioLabels().then(fetchGpio);
+// โหลด role ก่อนเสมอ เพื่อให้ GPIO grid แสดงสิทธิ์ถูกต้องตั้งแต่ต้น
+initRole().then(() => fetchGpioLabels().then(fetchGpio));
 setInterval(fetchStatus, 10000);
 setInterval(() => { fetchGpio(); startCountdown(); }, 2000);
