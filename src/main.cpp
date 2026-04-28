@@ -550,14 +550,19 @@ void setup() {
     initIdentity();
 
     if (loadConfig()) {
-        // มี config แล้ว → Normal mode
         connectWiFi();
-        setupNormalServer();
-        tunnel.begin(cfg.relayHost, 3000, "/tunnel"); // local: WS port 3000
-        tunnel.onEvent(onTunnelEvent);
-        tunnel.setReconnectInterval(5000);
-        appState = STATE_NORMAL;
-        Serial.println("[Tunnel] กำลังเชื่อมต่อ Relay...");
+        if (WiFi.status() != WL_CONNECTED) {
+            // WiFi ล้มเหลวตอน boot → กลับ AP mode ให้ user reconfigure
+            Serial.println("[WiFi] เชื่อมต่อไม่ได้ → กลับ AP mode");
+            startAPMode();
+        } else {
+            setupNormalServer();
+            tunnel.begin(cfg.relayHost, 3000, "/tunnel"); // local: WS port 3000
+            tunnel.onEvent(onTunnelEvent);
+            tunnel.setReconnectInterval(5000);
+            appState = STATE_NORMAL;
+            Serial.println("[Tunnel] กำลังเชื่อมต่อ Relay...");
+        }
     } else {
         // ยังไม่มี config → AP mode
         startAPMode();
@@ -600,11 +605,17 @@ void loop() {
             tunnel.loop();
             if (otaReboot) { delay(300); ESP.restart(); }
             static unsigned long lastWifiCheck = 0;
+            static int wifiRetryCount = 0;
             if (millis() - lastWifiCheck > 10000) {
                 lastWifiCheck = millis();
                 if (WiFi.status() != WL_CONNECTED) {
-                    Serial.println("[WiFi] หลุด กำลังต่อใหม่...");
-                    WiFi.reconnect();
+                    wifiRetryCount++;
+                    Serial.printf("[WiFi] หลุด กำลังต่อใหม่... (%d)\n", wifiRetryCount);
+                    WiFi.disconnect();
+                    delay(100);
+                    WiFi.begin(cfg.ssid, cfg.password);
+                } else {
+                    wifiRetryCount = 0;
                 }
             }
             break;
