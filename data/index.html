@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
-  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -424,6 +424,10 @@ function App() {
   const [countdown, setCD]    = useState(2);
   const [otaOpen, setOtaOpen] = useState(false);
   const [role, setRole]       = useState('owner');
+  const gpioLoadingRef        = useRef(false);
+  const statusLoadingRef      = useRef(false);
+  const labelsRef             = useRef({});
+  const labelsLoadedRef       = useRef(0);
   const canControl = role !== 'viewer';
   const isOwner    = role === 'owner';
 
@@ -448,25 +452,45 @@ function App() {
   };
 
   const loadStatus = async () => {
+    if (statusLoadingRef.current) return;
+    statusLoadingRef.current = true;
     try {
       const d = await fetch('api/status').then(r=>r.json());
       setStatus(d);
       setUptime(d.uptime||0);
       if (d.name) setDevName(d.name);
     } catch {}
+    finally { statusLoadingRef.current = false; }
+  };
+
+  const loadLabels = async (force) => {
+    if (isLocalMode) return labelsRef.current;
+    const freshEnough = Date.now() - labelsLoadedRef.current < 15000;
+    if (!force && freshEnough) return labelsRef.current;
+
+    try {
+      const rows = await fetch('api/gpio/labels').then(r=>r.json());
+      const labels = {};
+      if (Array.isArray(rows)) rows.forEach(l => { labels[l.pin_name] = l.label; });
+      labelsRef.current = labels;
+      labelsLoadedRef.current = Date.now();
+    } catch {}
+
+    return labelsRef.current;
   };
 
   const loadGpio = async () => {
+    if (gpioLoadingRef.current) return;
+    gpioLoadingRef.current = true;
     setCD(2);
     try {
-      const data = await fetch('api/gpio').then(r=>r.json());
-      let labels = {};
-      try {
-        const lbls = await fetch('api/gpio/labels').then(r=>r.json());
-        if (Array.isArray(lbls)) lbls.forEach(l => { labels[l.pin_name] = l.label; });
-      } catch {}
+      const [data, labels] = await Promise.all([
+        fetch('api/gpio').then(r=>r.json()),
+        loadLabels(false)
+      ]);
       setPins((data.pins || []).map((p,i) => ({...p, label: labels[p.name]||'', _i:i})));
     } catch {}
+    finally { gpioLoadingRef.current = false; }
     setTimeout(() => setCD(0), 100);
   };
 
@@ -485,6 +509,8 @@ function App() {
         return {...p, mode: val};
       }
       if (action === 'label') {
+        labelsRef.current = {...labelsRef.current, [pinName]: val};
+        labelsLoadedRef.current = Date.now();
         fetch('api/gpio/labels',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pinName,label:val})});
         showToast(val?'"'+val+'"':'ลบชื่อแล้ว');
         return {...p, label: val};
