@@ -18,6 +18,7 @@ const httpServer = http.createServer(app);
 const wss        = new WebSocketServer({ server: httpServer, path: '/tunnel' });
 
 const TIMEOUT_MS = 10000;
+const LATENCY_LOG_MS = Number(process.env.RELAY_LATENCY_LOG_MS || 750);
 
 // deviceId → WebSocket
 const devices = new Map();
@@ -121,9 +122,15 @@ wss.on('connection', (ws, req) => {
         }
 
         if (msg.type === 'response' && pending.has(msg.id)) {
-            const { res, timer } = pending.get(msg.id);
+            const entry = pending.get(msg.id);
+            const { res, timer } = entry;
+            const elapsed = Date.now() - entry.startedAt;
             clearTimeout(timer);
             pending.delete(msg.id);
+            res.set('X-Relay-Roundtrip-Ms', String(elapsed));
+            if (entry.path === '/api/gpio' || elapsed >= LATENCY_LOG_MS) {
+                console.log(`[Timing] ${entry.deviceId} ${entry.method} ${entry.path} ${elapsed}ms status=${msg.status}`);
+            }
             res.status(msg.status).type(msg.contentType || 'text/plain').send(body);
         }
     });
@@ -273,10 +280,15 @@ app.use('/d/:deviceId', authRequired, wrap(async (req, res) => {
 
     const id    = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const timer = setTimeout(() => {
-        if (pending.has(id)) { pending.delete(id); res.status(504).send('Gateway Timeout'); }
+        if (pending.has(id)) {
+            const entry = pending.get(id);
+            pending.delete(id);
+            console.warn(`[Timing] ${entry.deviceId} ${entry.method} ${entry.path} timeout after ${TIMEOUT_MS}ms`);
+            res.status(504).send('Gateway Timeout');
+        }
     }, TIMEOUT_MS);
 
-    pending.set(id, { res, timer, deviceId });
+    pending.set(id, { res, timer, deviceId, method: req.method, path: req.path || '/', startedAt: Date.now() });
     ws.send(JSON.stringify({
         type:   'request',
         id,
