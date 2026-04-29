@@ -210,6 +210,9 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 const isLocalMode = !window.location.pathname.startsWith('/d/');
 const ML = ['INPUT','OUTPUT','PULLUP'];
+const GPIO_POLL_MS = isLocalMode ? 500 : 1000;
+const STATUS_POLL_MS = 5000;
+const LABEL_CACHE_MS = 30000;
 
 function showToast(msg, type) {
   const c = document.getElementById('toasts');
@@ -421,7 +424,7 @@ function App() {
   const [filter, setFilter]   = useState('all');
   const [showSettings, setSS] = useState(false);
   const [devName, setDevName] = useState('ESP32');
-  const [countdown, setCD]    = useState(2);
+  const [countdown, setCD]    = useState(Math.ceil(GPIO_POLL_MS / 1000));
   const [otaOpen, setOtaOpen] = useState(false);
   const [role, setRole]       = useState('owner');
   const gpioLoadingRef        = useRef(false);
@@ -433,8 +436,8 @@ function App() {
 
   useEffect(() => {
     initApp();
-    const gpioIv   = setInterval(loadGpio,   2000);
-    const statusIv = setInterval(loadStatus, 5000);
+    const gpioIv   = setInterval(loadGpio, GPIO_POLL_MS);
+    const statusIv = setInterval(loadStatus, STATUS_POLL_MS);
     const uptimeIv = setInterval(() => setUptime(u => u + 1), 1000);
     return () => { clearInterval(gpioIv); clearInterval(statusIv); clearInterval(uptimeIv); };
   }, []);
@@ -465,7 +468,7 @@ function App() {
 
   const loadLabels = async (force) => {
     if (isLocalMode) return labelsRef.current;
-    const freshEnough = Date.now() - labelsLoadedRef.current < 15000;
+    const freshEnough = Date.now() - labelsLoadedRef.current < LABEL_CACHE_MS;
     if (!force && freshEnough) return labelsRef.current;
 
     try {
@@ -482,7 +485,7 @@ function App() {
   const loadGpio = async () => {
     if (gpioLoadingRef.current) return;
     gpioLoadingRef.current = true;
-    setCD(2);
+    setCD(Math.ceil(GPIO_POLL_MS / 1000));
     try {
       const [data, labels] = await Promise.all([
         fetch('api/gpio').then(r=>r.json()),
@@ -499,12 +502,14 @@ function App() {
       if (p.name !== pinName) return p;
       if (action === 'toggle') {
         const nv = p.value ? 0 : 1;
-        fetch('api/gpio/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pinName,mode:p.mode,value:nv})});
+        fetch('api/gpio/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pinName,mode:p.mode,value:nv})})
+          .then(loadGpio).catch(()=>{});
         showToast(pinName+': '+(p.value?'HIGH→LOW':'LOW→HIGH'));
         return {...p, value: nv};
       }
       if (action === 'mode') {
-        fetch('api/gpio/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pinName,mode:val,value:p.value})});
+        fetch('api/gpio/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pinName,mode:val,value:p.value})})
+          .then(loadGpio).catch(()=>{});
         showToast(pinName+': '+ML[val]);
         return {...p, mode: val};
       }
