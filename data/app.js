@@ -436,7 +436,7 @@ function App() {
   const [devName, setDevName] = useState('ESP32');
   const [countdown, setCD] = useState(Math.ceil(GPIO_POLL_MS / 1000));
   const [otaOpen, setOtaOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [role, setRole] = useState('owner');
   const gpioLoadingRef = useRef(false);
   const statusLoadingRef = useRef(false);
@@ -611,27 +611,29 @@ function App() {
     className: "nav-right"
   }, React.createElement("div", {
     className: "nav-dot"
-  }), React.createElement("span", {
-    className: "nav-badge"
-  }, isLocalMode ? 'Local' : 'Relay'), (canControl || isOwner) && React.createElement("button", {
-    className: "nav-btn",
-    onClick: () => setSS(true)
-  }, "\u2699 \u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32"), !isLocalMode && React.createElement("button", {
-    className: "nav-btn",
+  }), React.createElement("button", {
+    className: "nav-ham",
+    onClick: () => setMenuOpen(o => !o),
+    "aria-label": "เมนู"
+  }, menuOpen ? "✕" : "☰"), menuOpen && React.createElement("div", {
+    className: "nav-overlay",
+    onClick: () => setMenuOpen(false)
+  }), menuOpen && React.createElement("div", {
+    className: "nav-menu"
+  }, React.createElement("div", {
+    className: "nav-menu-sep"
+  }, isLocalMode ? "Local" : "Relay"), (canControl || isOwner) && React.createElement("button", {
+    className: "nav-menu-item",
+    onClick: () => { setMenuOpen(false); setSS(true); }
+  }, "⚙ ตั้งค่า"), !isLocalMode && React.createElement("button", {
+    className: "nav-menu-item",
     onClick: () => fetch('/api/auth/logout', {
       method: 'POST'
     }).then(() => location.href = '/login')
-  }, "\u0E2D\u0E2D\u0E01"), React.createElement("button", {
-    className: "nav-ham",
-    onClick: () => setSidebarOpen(o => !o),
-    "aria-label": "\u0E40\u0E21\u0E19\u0E39"
-  }, sidebarOpen ? "\u2715" : "\u2630"))), React.createElement("div", {
+  }, "ออกจากระบบ")))), React.createElement("div", {
     className: "body"
-  }, React.createElement("div", {
-    className: "sidebar-overlay" + (sidebarOpen ? " show" : ""),
-    onClick: () => setSidebarOpen(false)
-  }), React.createElement("aside", {
-    className: "sidebar" + (sidebarOpen ? " open" : "")
+  }, React.createElement("aside", {
+    className: "sidebar"
   }, React.createElement("div", {
     className: "s-section"
   }, React.createElement("div", {

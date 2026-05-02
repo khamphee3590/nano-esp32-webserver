@@ -231,7 +231,7 @@ function App() {
   const [devName, setDevName] = useState('ESP32');
   const [countdown, setCD]    = useState(Math.ceil(GPIO_POLL_MS / 1000));
   const [otaOpen, setOtaOpen]       = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [role, setRole]               = useState('owner');
   const gpioLoadingRef        = useRef(false);
   const statusLoadingRef      = useRef(false);
@@ -354,15 +354,18 @@ function App() {
         <div className="nav-right">
           <div className="nav-dot"></div>
           <span className="nav-badge">{isLocalMode ? 'Local' : 'Relay'}</span>
-          {(canControl||isOwner) && <button className="nav-btn" onClick={()=>setSS(true)}>⚙ ตั้งค่า</button>}
-          {!isLocalMode && <button className="nav-btn" onClick={()=>fetch('/api/auth/logout',{method:'POST'}).then(()=>location.href='/login')}>ออก</button>}
-          <button className="nav-ham" onClick={()=>setSidebarOpen(o=>!o)} aria-label="เมนู">{sidebarOpen?'✕':'☰'}</button>
+          <button className="nav-ham" onClick={()=>setMenuOpen(o=>!o)} aria-label="เมนู">{menuOpen?'✕':'☰'}</button>
+          {menuOpen && <div className="nav-overlay" onClick={()=>setMenuOpen(false)}></div>}
+          {menuOpen && <div className="nav-menu">
+            <div className="nav-menu-sep">{isLocalMode?'Local':'Relay'}</div>
+            {(canControl||isOwner) && <button className="nav-menu-item" onClick={()=>{setMenuOpen(false);setSS(true);}}>⚙ ตั้งค่า</button>}
+            {!isLocalMode && <button className="nav-menu-item" onClick={()=>fetch('/api/auth/logout',{method:'POST'}).then(()=>location.href='/login')}>ออกจากระบบ</button>}
+          </div>}
         </div>
       </nav>
 
       <div className="body">
-        <div className={"sidebar-overlay"+(sidebarOpen?" show":"")} onClick={()=>setSidebarOpen(false)}></div>
-        <aside className={"sidebar"+(sidebarOpen?" open":"")}>
+        <aside className="sidebar">
 
           <div className="s-section">
             <div className="s-title">สถานะ</div>
